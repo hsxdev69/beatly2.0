@@ -77,6 +77,7 @@ function syncMediaPosition() {
 
 export function AudioEngine() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const activeSourceRef = useRef<"audio" | null>(null);
   const blobUrlRef = useRef<string | null>(null);
   const loadedTrackRef = useRef<string | null>(null);
   const loadGenerationRef = useRef(0);
@@ -140,15 +141,35 @@ export function AudioEngine() {
     audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
     audio.muted = muted;
 
-    // A browser user gesture can unlock the audio element. This listener is
-    // intentionally mounted at AppShell lifetime, not PlayerScreen lifetime.
+    // This listener is the critical Android/Safari fix. `playTrack()` emits
+    // this synchronously from the user's tap, so setting src + play() happens
+    // inside the browser's transient user-activation window instead of waiting
+    // for a later React effect (which autoplay policy may reject).
+    const onImmediatePlay = (event: Event) => {
+      const requested = (event as CustomEvent<Track>).detail;
+      if (!requested || requested.id.startsWith("local:")) return;
+      const state = usePlayer.getState();
+      const current = state.current();
+      if (!current || current.id !== requested.id) return;
+      const src = streamPath(requested.videoId || requested.id);
+      activeSourceRef.current = "audio";
+      loadedTrackRef.current = requested.id;
+      audio.src = src;
+      audio.load();
+      playAudio();
+    };
+    window.addEventListener("beatly:play-request", onImmediatePlay);
+
+    // A user gesture can also unlock an existing source after an autoplay
+    // rejection, without requiring a second click on the play button.
     const unlock = () => {
-      if (usePlayer.getState().isPlaying && audio.paused) playAudio();
+      if (usePlayer.getState().isPlaying && audio.paused && audio.src) playAudio();
     };
     document.addEventListener("click", unlock);
     document.addEventListener("touchend", unlock);
 
     return () => {
+      window.removeEventListener("beatly:play-request", onImmediatePlay);
       document.removeEventListener("click", unlock);
       document.removeEventListener("touchend", unlock);
       audioElement.current = null;
@@ -177,6 +198,15 @@ export function AudioEngine() {
 
     const trackId = track.id;
     const videoId = track.videoId || track.id;
+
+    // A card click can synchronously assign/play the source through the
+    // `beatly:play-request` event before this React effect runs. Keep that
+    // user-activated source instead of replacing it a second time.
+    if (loadedTrackRef.current === trackId && audio.src) {
+      if (usePlayer.getState().isPlaying) playAudio();
+      return;
+    }
+
     loadedTrackRef.current = null;
     retryStateRef.current = { id: trackId, attempts: 0 };
     releaseBlob();
