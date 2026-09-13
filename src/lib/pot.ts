@@ -2,6 +2,7 @@
  * Main-thread client for the PO Token worker (workers/pot-worker.mjs).
  */
 import "server-only";
+import fs from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
@@ -20,7 +21,22 @@ const pending = (g.__beatlyPotPending ??= new Map());
 
 function getWorker(): Worker {
   if (g.__beatlyPotWorker) return g.__beatlyPotWorker;
-  const file = path.join(process.cwd(), "workers", "pot-worker.mjs");
+
+  // In Vercel's Node serverless runtime the worker must be present in the
+  // traced function bundle. next.config.ts explicitly includes workers/**/*;
+  // this check turns a packaging problem into a useful error instead of a
+  // silent LOGIN_REQUIRED from the resolver.
+  const candidates = [
+    path.join(process.cwd(), "workers", "pot-worker.mjs"),
+    path.join(process.cwd(), ".next", "server", "workers", "pot-worker.mjs"),
+  ];
+  const file = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!file) {
+    throw new Error(
+      `PO token worker missing from deployment. Checked: ${candidates.join(", ")}`,
+    );
+  }
+
   const worker = new Worker(file);
   worker.on("message", (m: { id?: number; token?: string; error?: string }) => {
     if (m.id === undefined) return;
@@ -41,7 +57,9 @@ function getWorker(): Worker {
   };
   worker.on("error", fail);
   worker.on("exit", (code) => fail(new Error(`PO token worker exited (${code})`)));
-  worker.unref();
+  // Do not call `unref()` here. On a Vercel serverless invocation the worker
+  // must keep the Node process alive until BotGuard posts the PO token back;
+  // unref() can let the invocation finish while the resolver is still waiting.
   g.__beatlyPotWorker = worker;
   return worker;
 }
