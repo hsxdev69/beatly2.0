@@ -1,3 +1,4 @@
+
 /**
  * ┌──────────────────────────┐
  * │ Audio Stream Resolver    │   Layer 2 — Song ID → Stream URL
@@ -43,7 +44,7 @@ export type ResolvedStream = {
   client: string;
   expiresAt: number;
   /** Which backend produced this URL (for diagnostics / x-beatly-resolver). */
-  backend: "innertube" | "piped";
+  backend: "innertube" | "piped" | "invidious" | "custom";
 };
 
 type BasicInfo = Awaited<ReturnType<Innertube["getBasicInfo"]>>;
@@ -92,7 +93,9 @@ const cache = (g.__beatlyStreamCache ??= new Map());
 // Short negative cache: while an id is cooling down we do NOT hit YouTube
 // again (retry storms deepen the bot flag that breaks background playback).
 const failUntil = (g.__beatlyStreamFail ??= new Map());
-const FAIL_COOLDOWN_MS = 30_000;
+// Short cooldown after a failed resolve so a retry storm can't deepen the bot
+// flag, but not so long that a user is locked out. `?fresh=1` bypasses it.
+const FAIL_COOLDOWN_MS = 8_000;
 const inflight = (g.__beatlyInflight ??= new Map());
 if (!g.__beatlyPlayerQueue) g.__beatlyPlayerQueue = Promise.resolve();
 if (!g.__beatlyLastPlayerCall) g.__beatlyLastPlayerCall = 0;
@@ -133,7 +136,7 @@ async function createSession(): Promise<Session> {
 
   let poToken: string | undefined;
   try {
-    poToken = await mintPoToken(visitorData);
+    poToken = (await mintPoToken(visitorData)) ?? undefined;
   } catch (err) {
     console.warn("Session PO token mint failed, continuing without:", err);
   }
@@ -249,12 +252,54 @@ async function resolveWithClient(yt: Innertube, videoId: string, client: ClientN
 /* preferred; otherwise a progressive mp4 (itag 18/22) carries audio.   */
 /* ------------------------------------------------------------------ */
 
-const PIPED_INSTANCES = [
+/** Parse a comma-separated env var into a clean list of base URLs. */
+function envList(name: string): string[] {
+  return (
+    process.env[name]
+      ?.split(",")
+      .map((s) => s.trim().replace(/\/+$/, ""))
+      .filter(Boolean) ?? []
+  );
+}
+
+const PUBLIC_PIPED = [
+  "https://pipedapi.kavin.rocks",
   "https://api.piped.private.coffee",
   "https://pipedapi.ducks.party",
   "https://pipedapi.adminforge.de",
   "https://pipedapi.drgns.space",
+  "https://pipedapi.reallyaweso.me",
+  "https://pipedapi.leptons.xyz",
 ];
+
+const PUBLIC_INVIDIOUS = [
+  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://iv.melmac.space",
+  "https://invidious.jing.rocks",
+  "https://yewtu.be",
+];
+
+/**
+ * Piped instances. Self-hosted instances via `PIPED_API_URL` (comma-separated)
+ * are tried FIRST — that is the only reliable fix for datacenter-IP blocking on
+ * Vercel. Public mirrors are best-effort (they frequently 403/500 datacenter
+ * IPs). Read per-call so env changes take effect without a rebuild.
+ */
+function pipedInstances(): string[] {
+  return [...envList("PIPED_API_URL"), ...PUBLIC_PIPED];
+}
+
+/**
+ * Invidious `latest_version` proxy — an independent fallback that streams audio
+ * through Invidious's own servers (their IP, not ours), bypassing the datacenter
+ * block. `INVIDIOUS_API_URL` (comma-separated) self-hosted instances are tried
+ * first. itag 140 = m4a audio, 251/250/249 = opus/webm audio.
+ */
+function invidiousInstances(): string[] {
+  return [...envList("INVIDIOUS_API_URL"), ...PUBLIC_INVIDIOUS];
+}
+const INVIDIOUS_AUDIO_ITAGS = [140, 251, 250, 249];
 
 type PipedStreamItem = {
   itag?: number;
@@ -270,7 +315,7 @@ const PROGRESSIVE_PREF = [18, 22, 43, 36, 17];
 
 async function resolveViaPiped(videoId: string): Promise<ResolvedStream> {
   const errors: string[] = [];
-  for (const base of PIPED_INSTANCES) {
+  for (const base of pipedInstances()) {
     try {
       const res = await fetch(`${base}/streams/${videoId}`, {
         headers: { accept: "application/json", "user-agent": YT_USER_AGENT },
@@ -329,6 +374,73 @@ async function resolveViaPiped(videoId: string): Promise<ResolvedStream> {
   throw new Error(`Piped failed: ${errors.join(" | ") || "no instances"}`);
 }
 
+/**
+ * Invidious fallback. Uses `latest_version?id=…&itag=…&local=true` which streams
+ * the audio through the Invidious instance itself, so YouTube never sees our
+ * datacenter IP. We validate the probe actually returns audio bytes (not an
+ * HTML captcha / error page), then hand the proxied URL to the browser.
+ */
+async function resolveViaInvidious(videoId: string): Promise<ResolvedStream> {
+  const errors: string[] = [];
+  for (const base of invidiousInstances()) {
+    for (const itag of INVIDIOUS_AUDIO_ITAGS) {
+      const url = `${base}/latest_version?id=${encodeURIComponent(videoId)}&itag=${itag}&local=true`;
+      try {
+        const probe = await fetch(url, {
+          headers: { range: "bytes=0-1", "user-agent": YT_USER_AGENT, accept: "*/*" },
+          redirect: "follow",
+          signal: AbortSignal.timeout(10000),
+        });
+        const ctype = probe.headers.get("content-type") ?? "";
+        // Anti-bot pages / errors come back as HTML — reject them.
+        if (!probe.ok && probe.status !== 206) {
+          probe.body?.cancel().catch(() => {});
+          throw new Error(`itag${itag} status ${probe.status}`);
+        }
+        if (ctype.includes("text/html") || ctype.includes("application/json")) {
+          probe.body?.cancel().catch(() => {});
+          throw new Error(`itag${itag} not audio (${ctype.split(";")[0]})`);
+        }
+        const lenHeader =
+          probe.headers.get("content-range")?.split("/")[1] ?? probe.headers.get("content-length");
+        probe.body?.cancel().catch(() => {});
+
+        const mime = ctype.split(";")[0] || (itag === 140 ? "audio/mp4" : "audio/webm");
+        return {
+          url,
+          mimeType: mime,
+          contentLength: lenHeader ? Number(lenHeader) || null : null,
+          bitrate: null,
+          durationMs: null,
+          client: `INVIDIOUS(itag${itag})`,
+          backend: "invidious",
+          expiresAt: Date.now() + 30 * 60 * 1000,
+        };
+      } catch (e) {
+        errors.push(`${base.replace(/^https?:\/\//, "")}: ${e instanceof Error ? e.message : String(e)}`.slice(0, 100));
+      }
+    }
+  }
+  throw new Error(`Invidious failed: ${errors.slice(0, 4).join(" | ") || "no instances"}`);
+}
+
+/** Try Piped, then Invidious — the two IP-independent proxy backends. */
+async function resolveViaProxy(videoId: string): Promise<ResolvedStream> {
+  try {
+    return await resolveViaPiped(videoId);
+  } catch (pipedErr) {
+    try {
+      return await resolveViaInvidious(videoId);
+    } catch (invErr) {
+      throw new Error(
+        `${pipedErr instanceof Error ? pipedErr.message : String(pipedErr)} || ${
+          invErr instanceof Error ? invErr.message : String(invErr)
+        }`.slice(0, 500),
+      );
+    }
+  }
+}
+
 async function resolveViaInnerTube(videoId: string): Promise<ResolvedStream> {
   const { yt } = await getSession();
   const errors: string[] = [];
@@ -368,18 +480,18 @@ async function resolveUncached(videoId: string): Promise<ResolvedStream> {
         }
       }
       try {
-        return await resolveViaPiped(videoId);
-      } catch (pipedErr) {
+        return await resolveViaProxy(videoId);
+      } catch (proxyErr) {
         throw new Error(
-          `Unable to resolve ${videoId}: ${msg.slice(0, 300)} || ${pipedErr instanceof Error ? pipedErr.message : String(pipedErr)}`.slice(0, 600),
+          `Unable to resolve ${videoId}: ${msg.slice(0, 200)} || ${proxyErr instanceof Error ? proxyErr.message : String(proxyErr)}`.slice(0, 600),
         );
       }
     }
   }
 
-  // Circuit open — go straight to the fallback backend.
+  // Circuit open — go straight to the proxy backends (Piped → Invidious).
   try {
-    return await resolveViaPiped(videoId);
+    return await resolveViaProxy(videoId);
   } catch (e) {
     throw new Error(
       `Unable to resolve ${videoId} (InnerTube cooling down): ${e instanceof Error ? e.message : String(e)}`.slice(0, 500),
