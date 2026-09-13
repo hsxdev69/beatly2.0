@@ -11,6 +11,9 @@ import { YT_USER_AGENT } from "@/lib/pot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Stream resolution can require BotGuard/PO-token startup on a cold Vercel
+// function. Give the Node serverless function enough time for that cold path.
+export const maxDuration = 60;
 
 const ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 const PASS = ["content-type", "content-length", "content-range", "last-modified", "etag"];
