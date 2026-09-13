@@ -81,6 +81,16 @@ function shuffled<T>(arr: T[], keepFirst: T): T[] {
 }
 
 /**
+ * Sends a synchronous browser event from the user's click handler to the
+ * persistent AudioEngine. This keeps the HTML5 audio.play() call inside the
+ * browser's transient user-activation window on Android/Safari.
+ */
+function requestImmediatePlay(track: Track | null) {
+  if (typeof window === "undefined" || !track) return;
+  window.dispatchEvent(new CustomEvent("beatly:play-request", { detail: track }));
+}
+
+/**
  * Dynamic "Up Next" queue sync (API radio).
  *
  * After the user plays a track, ask the backend for the catalog provider's "Up Next"
@@ -203,6 +213,9 @@ export const usePlayer = create<PlayerState>()(
           radioLoading: false,
           radioLastFetchedAt: null,
         });
+        // Start online playback in the same user-activation event as the
+        // card click; this prevents Android/Safari autoplay rejection.
+        requestImmediatePlay(track);
         // Dynamic "Up Next" sync: populate the queue with 100+ radio picks
         // for the song that just started (skipped for offline contexts).
         syncRadioQueue(track, ctx);
@@ -230,7 +243,11 @@ export const usePlayer = create<PlayerState>()(
         if (i === index) return;
         set({ queue: queue.filter((_, k) => k !== i), index: i < index ? index - 1 : index });
       },
-      jumpTo: (i) => set({ index: i, isPlaying: true, currentTime: 0 }),
+      jumpTo: (i) => {
+        const track = get().queue[i] ?? null;
+        set({ index: i, isPlaying: true, currentTime: 0 });
+        requestImmediatePlay(track);
+      },
       toggle: () => set((s) => ({ isPlaying: s.index >= 0 ? !s.isPlaying : false })),
       setPlaying: (v) => set({ isPlaying: v }),
       next: (auto = false) => {
