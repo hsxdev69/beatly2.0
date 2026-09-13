@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: the app root always renders <html class="dark">,
+   so `dark:` utilities apply the Liquid Glass dark glass (bg-black/30). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-brand: #ff4f8b;
+  --color-brand-dark: #d63c72;
+  --color-surface: #0a0a0a;
+  --color-surface-2: #121212;
+  --color-surface-3: #1b1b1b;
+  --color-surface-4: #262626;
+  --color-muted: #a3a3a3;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Runtime accent override: when the user picks an accent in Settings,
+   `ThemeAccent` writes these variables to :root so every `*-brand-*`
+   utility and slider thumb instantly re-themes without a rebuild. */
+:root {
+  --accent: var(--color-brand);
+  --accent-dark: var(--color-brand-dark);
+  --accent-rgb: 255 79 139; /* space-separated for rgb(R G B / alpha) */
+}
+
+
+html,
+body {
+  height: 100%;
+  background: #000;
+  color: #fff;
+  overscroll-behavior-y: none;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a transparent;
+  -webkit-tap-highlight-color: transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 8px; }
+
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Glassmorphism */
+.glass {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+}
+.glass-strong {
+  background: rgba(18, 18, 18, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+}
+.safe-b { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Range inputs */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  height: 16px;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--fill, #fff) 0%, var(--fill, #fff) var(--pct, 0%), rgba(255,255,255,0.18) var(--pct, 0%), rgba(255,255,255,0.18) 100%);
+}
+input[type="range"]::-moz-range-track { height: 4px; border-radius: 999px; background: rgba(255,255,255,0.18); }
+input[type="range"]::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--fill, #fff); }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px; width: 14px; margin-top: -5px;
+  border-radius: 50%;
+  background: var(--thumb-color, #fff);
+  box-shadow: 0 0 0 4px var(--thumb-glow, rgba(255,255,255,0.12));
+  opacity: var(--thumb, 0);
+  transition: opacity 0.15s;
+}
+input[type="range"]::-moz-range-thumb { height: 14px; width: 14px; border: 0; border-radius: 50%; background: var(--thumb-color, #fff); opacity: var(--thumb, 0); transition: opacity 0.15s; }
+input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-webkit-slider-thumb, input[type="range"]:active::-webkit-slider-thumb { opacity: 1; }
+input[type="range"]:hover::-moz-range-thumb, input[type="range"]:active::-moz-range-thumb { opacity: 1; }
+input[type="range"].vertical { writing-mode: vertical-lr; direction: rtl; width: 16px; height: 140px; }
+input[type="range"].vertical::-webkit-slider-runnable-track { width: 4px; height: 100%; background: linear-gradient(to top, var(--fill, #fff) 0%, var(--fill, #fff) var(--pct, 0%), rgba(255,255,255,0.18) var(--pct, 0%), rgba(255,255,255,0.18) 100%); }
+input[type="range"].vertical::-webkit-slider-thumb { margin-top: 0; margin-left: -5px; }
+
+/* Equalizer bars */
+@keyframes eq1 { 0%, 100% { height: 30%; } 50% { height: 100%; } }
+@keyframes eq2 { 0%, 100% { height: 100%; } 50% { height: 40%; } }
+@keyframes eq3 { 0%, 100% { height: 60%; } 50% { height: 20%; } }
+.eq-bar:nth-child(1) { animation: eq1 0.8s ease-in-out infinite; }
+.eq-bar:nth-child(2) { animation: eq2 0.7s ease-in-out infinite; }
+.eq-bar:nth-child(3) { animation: eq3 0.9s ease-in-out infinite; }
+
+/* Fluid visualizer line */
+@keyframes flow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -160; } }
+.wave-line { stroke-dasharray: 80 80; animation: flow 2.4s linear infinite; }
+
+/* Recognition pulse */
+@keyframes ring { 0% { transform: scale(0.6); opacity: 0.8; } 100% { transform: scale(2.2); opacity: 0; } }
+.pulse-ring { animation: ring 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite; }
+.pulse-ring:nth-child(2) { animation-delay: 0.8s; }
+.pulse-ring:nth-child(3) { animation-delay: 1.6s; }
+
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+.animate-float { animation: float 3s ease-in-out infinite; }
